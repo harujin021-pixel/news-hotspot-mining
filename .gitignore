@@ -1,0 +1,39 @@
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.so
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# 本地敏感覆盖配置
+config/local_settings.py
+.env
+.env.local
+
+# 个人申请相关文档（含身份信息，不公开）
+PORTFOLIO.md
+
+# 运行产物（CSV/JSON 报告日志）
+# 注意：data/visualizations/ 的预生成仪表板、data/news.db、互动数据清单需随仓库分发（云端部署用），不忽略
+data/reports/*
+!data/reports/engagement_provenance.json
+data/exports/
+data/visualizations/enhanced_dashboard_*.html
+data/visualizations/news_scope_dashboard.html
+data/*.log
+data/cleaned_news_*.csv
+news_hotspot_mining.log
+crawl_test_*.log
+run_verify_*.log
+
+# 系统文件
+.DS_Store
+Thumbs.db
