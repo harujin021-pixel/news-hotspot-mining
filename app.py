@@ -199,8 +199,28 @@ CSS = """
 
 @st.cache_data(show_spinner=False)
 def _load_asset_js(name):
-    """读取 data/visualizations/assets 下的 JS（约1MB，缓存避免每次 rerun 重读）"""
+    """读取 data/visualizations/assets 下的小体积 JS（缓存避免每次 rerun 重读）"""
     return (VIS_DIR / 'assets' / name).read_text(encoding='utf-8')
+
+
+# 大体积依赖不再内联：echarts.min.js 约 1MB，7 张图内联即为 ~7MB，
+# 云端靠后的 iframe 要等很久才渲染。改为 CDN 外链后浏览器跨 iframe 复用同一份缓存，
+# 整页只付一次下载代价。版本与仓库内置资源一致（assets/echarts.min.js 的 version = 5.5.0）。
+CDN_ASSETS = {
+    'echarts.min.js': ('https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js',
+                       'https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js'),
+}
+
+
+def _asset_script(name):
+    """把 assets/<name> 引用换成可加载的 <script>：大库走 CDN（带备用源），小插件仍内联。"""
+    urls = CDN_ASSETS.get(name)
+    if not urls:
+        return f'<script type="text/javascript">{_load_asset_js(name)}</script>'
+    primary, fallback = urls
+    return (f'<script type="text/javascript" src="{primary}"></script>'
+            '<script type="text/javascript">window.echarts||document.write('
+            f'\'<script type="text/javascript" src="{fallback}"><\\/script>\');</script>')
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -220,8 +240,9 @@ def load_kpis():
 
 
 def render_chart_html(stem, lang):
-    """读取单个图表 HTML：内联 assets/*.js（components.html 无法解析相对路径），
-    并把卡片样式（白底/细边框/圆角/轻阴影）注入图表文档自身的 <head>。"""
+    """读取单个图表 HTML：把 assets/*.js 引用换成可加载的 <script> 标签
+    （components.html 无法解析相对路径），并把卡片样式（白底/细边框/圆角/轻阴影）
+    注入图表文档自身的 <head>。"""
     suffix = '_en' if lang == 'en' else ''
     path = VIS_DIR / f'{stem}{suffix}.html'
     if not path.is_file():
@@ -229,7 +250,7 @@ def render_chart_html(stem, lang):
     html = path.read_text(encoding='utf-8')
     html = re.sub(
         r'<script[^>]*src="assets/([\w.\-]+)"[^>]*></script>',
-        lambda m: f'<script type="text/javascript">{_load_asset_js(m.group(1))}</script>',
+        lambda m: _asset_script(m.group(1)),
         html,
     )
     card_css = ('<style>html,body{margin:0;padding:0;background:#f7f4ee;}'
