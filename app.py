@@ -63,10 +63,9 @@ I18N = {
         'fail': 'Run failed. See the log below for details.',
         'log': 'Run log',
         'csv': 'Download EchoMap CSV',
-        'cloud_notice': ('This cloud deployment ships a **SQLite snapshot**; '
-                         'live crawling runs locally against Chinese news sites '
-                         '(streamlit cloud overseas IPs are rate-limited). '
-                         'Use the CSV below, or run the project locally to refresh.'),
+        'cloud_notice': ('⚠️ Note: this app runs on overseas servers. Chinese news sites '
+                         'may rate-limit or partially block requests — results may be '
+                         'incomplete or empty. Use the CSV below for the guaranteed snapshot.'),
         'notes_kicker': 'Methodology',
         'notes_title': 'Data & Method Notes',
         'missing_chart': 'Chart file missing: {f} (run Collect & Update to regenerate)',
@@ -103,9 +102,8 @@ I18N = {
         'fail': '运行失败，请查看下方日志了解原因。',
         'log': '运行日志',
         'csv': '下载 EchoMap CSV',
-        'cloud_notice': ('当前为云端部署，随仓库分发 **SQLite 数据快照**；'
-                         '在线采集需在本地运行（海外服务器访问国内新闻源受限流）。'
-                         '下方 CSV 直接可用，或本地运行项目刷新数据。'),
+        'cloud_notice': ('⚠️ 提示：本应用运行在海外服务器上，采集国内新闻源可能受限或部分失败——'
+                         '结果可能不完整或为空。若采集失败，请使用下方 CSV 下载保证可用的数据快照。'),
         'notes_kicker': '方法',
         'notes_title': '数据与方法说明',
         'missing_chart': '图表文件缺失：{f}（可点击"一键采集更新"重新生成）',
@@ -405,10 +403,8 @@ def main():
         t = I18N[lang]
 
         st.markdown(f"<div class='side-head'>{t['controls']}</div>", unsafe_allow_html=True)
-        if CLOUD:
-            st.info(t['cloud_notice'])
-        run_disabled = CLOUD or STATE['running']
-        if st.button(t['run'], type='primary', disabled=run_disabled):
+        st.info(t['cloud_notice'])
+        if st.button(t['run'], type='primary', disabled=STATE['running']):
             with STATE_LOCK:
                 STATE['running'] = True
                 STATE['exit_code'] = None
