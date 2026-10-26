@@ -8,6 +8,7 @@
 """
 import os
 import re
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -379,12 +380,16 @@ def main():
     st.set_page_config(page_title='News Hotspot Mining', layout='wide')
     st.markdown(CSS, unsafe_allow_html=True)
 
-    # 云端检测：Streamlit Community Cloud 会设 STREAMLIT_SHARING_MODE 或
-    # 主机名含 streamlit.app；云端海外 IP 爬不到国内新闻源，且文件系统是临时的。
-    # 诚实禁用采集按钮，避免评审点击后看到空跑/报错。
+    # 云端检测（Streamlit Community Cloud）：
+    # —— STREAMLIT_SHARING_MODE 是 Streamlit 官方设置的环境变量
+    # —— socket.gethostname() 在云端容器返回完整域名（含 streamlit.app）
+    # —— 本地 Windows/Linux 主机名不会含 streamlit.app
+    try:
+        _hn = socket.gethostname().lower()
+    except Exception:
+        _hn = ''
     CLOUD = (os.environ.get('STREAMLIT_SHARING_MODE') is not None
-             or 'streamlit.app' in os.environ.get('HOSTNAME', '')
-             or 'streamlit.app' in os.environ.get('CLOUD_SERVER_NAME', ''))
+             or 'streamlit.app' in _hn)
 
     # 语言选择：默认英文，选择结果写入 URL query 参数（刷新/分享链接可保留）
     qp_lang = st.query_params.get('lang', 'en')
