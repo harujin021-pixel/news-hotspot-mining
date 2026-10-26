@@ -6,13 +6,18 @@
            data/news.db（SQLite 快照），预生成仪表板位于 data/visualizations/。
 视觉风格:  新闻媒体风（纸感底色 + 墨蓝 + 衬线标题），主题见 .streamlit/config.toml。
 """
+import os
 import re
 import sqlite3
 import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
+from io import BytesIO
 from pathlib import Path
+
+import pandas as pd
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -57,6 +62,10 @@ I18N = {
         'fail': 'Run failed. See the log below for details.',
         'log': 'Run log',
         'csv': 'Download EchoMap CSV',
+        'cloud_notice': ('This cloud deployment ships a **SQLite snapshot**; '
+                         'live crawling runs locally against Chinese news sites '
+                         '(streamlit cloud overseas IPs are rate-limited). '
+                         'Use the CSV below, or run the project locally to refresh.'),
         'notes_kicker': 'Methodology',
         'notes_title': 'Data & Method Notes',
         'missing_chart': 'Chart file missing: {f} (run Collect & Update to regenerate)',
@@ -93,6 +102,9 @@ I18N = {
         'fail': '运行失败，请查看下方日志了解原因。',
         'log': '运行日志',
         'csv': '下载 EchoMap CSV',
+        'cloud_notice': ('当前为云端部署，随仓库分发 **SQLite 数据快照**；'
+                         '在线采集需在本地运行（海外服务器访问国内新闻源受限流）。'
+                         '下方 CSV 直接可用，或本地运行项目刷新数据。'),
         'notes_kicker': '方法',
         'notes_title': '数据与方法说明',
         'missing_chart': '图表文件缺失：{f}（可点击"一键采集更新"重新生成）',
@@ -260,10 +272,73 @@ def render_chart_html(stem, lang):
 
 
 def latest_csv():
-    if not EXPORT_DIR.is_dir():
+    """旧逻辑已废弃：从 news.db 实时生成 EchoMap CSV（见 build_echomap_csv）。
+    保留此函数作为入口，返回 (filename, bytes) 或 (None, None)。"""
+    if not DB_FILE.is_file():
+        return None, None
+    buf = build_echomap_csv()
+    if buf is None:
+        return None, None
+    snap_date = load_kpis()['snapshot'] or 'unknown' if load_kpis() else 'unknown'
+    fname = f'echomap_news_snapshot_{snap_date}.csv'
+    return fname, buf
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def build_echomap_csv():
+    """直接从 SQLite 快照构建 EchoMap 兼容 CSV（bytes）。
+    不依赖仓库预置的 data/exports/*.csv —— 只要 news.db 在，按钮就在。
+    复用 echomap_export.py 的脱敏与清洗规则，保持输出一致。"""
+    if not DB_FILE.is_file():
         return None
-    files = sorted(EXPORT_DIR.glob('echomap_news_*.csv'), key=lambda p: p.stat().st_mtime)
-    return files[-1] if files else None
+    try:
+        from echomap_export import mask_sensitive, SENSITIVE_COLUMNS
+    except Exception:
+        # 极端情况下脱敏模块导入失败，降级为原始数据（不脱敏，仍可用）
+        def _no_mask(text): return (text, {})
+        mask_sensitive = _no_mask
+        SENSITIVE_COLUMNS = ("title", "content", "author")
+
+    con = sqlite3.connect(str(DB_FILE))
+    try:
+        df = pd.read_sql_query(
+            'SELECT news_id, title, content, source, author, publish_time, url '
+            'FROM news_articles', con)
+    finally:
+        con.close()
+    if df.empty:
+        return None
+
+    out = pd.DataFrame()
+    out['id'] = df['news_id'].astype(str)
+    out['title'] = df['title'].astype(str).str.strip()
+    out['content'] = df['content'].astype(str).str.strip()
+    out['source'] = df['source'].astype(str).str.strip()
+    out['author'] = df.get('author', '').astype(str).str.strip()
+    out['url'] = df.get('url', '').astype(str).str.strip()
+
+    # 文本净化（HTML标签 + 空白压缩）—— echomap_export.py 的简化版，
+    # 去掉了 remove_noise_phrases 依赖（它需要 preprocessing 包）。
+    for col in ('title', 'content'):
+        out[col] = out[col].str.replace(r'<[^>]+>', '', regex=True)
+    out[['title', 'content']] = out[['title', 'content']].apply(
+        lambda s: s.str.replace(r'\s+', ' ', regex=True).str.strip())
+
+    # 敏感信息脱敏
+    for col in SENSITIVE_COLUMNS:
+        masked = out[col].map(mask_sensitive)
+        out[col] = masked.map(lambda x: x[0])
+
+    # 发布时间：解析失败/缺失 -> 空字符串（EchoMap 会记为 NaT）
+    parsed_dates = pd.to_datetime(df['publish_time'], errors='coerce')
+    out['published_at'] = parsed_dates.dt.strftime('%Y-%m-%d %H:%M:%S').fillna('')
+
+    # id 去重（数据库本身已去重，保险）
+    out = out.drop_duplicates(subset='id', keep='first').reset_index(drop=True)
+
+    buf = BytesIO()
+    out.to_csv(buf, index=False, encoding='utf-8-sig')
+    return buf.getvalue()
 
 
 def run_pipeline():
@@ -304,6 +379,13 @@ def main():
     st.set_page_config(page_title='News Hotspot Mining', layout='wide')
     st.markdown(CSS, unsafe_allow_html=True)
 
+    # 云端检测：Streamlit Community Cloud 会设 STREAMLIT_SHARING_MODE 或
+    # 主机名含 streamlit.app；云端海外 IP 爬不到国内新闻源，且文件系统是临时的。
+    # 诚实禁用采集按钮，避免评审点击后看到空跑/报错。
+    CLOUD = (os.environ.get('STREAMLIT_SHARING_MODE') is not None
+             or 'streamlit.app' in os.environ.get('HOSTNAME', '')
+             or 'streamlit.app' in os.environ.get('CLOUD_SERVER_NAME', ''))
+
     # 语言选择：默认英文，选择结果写入 URL query 参数（刷新/分享链接可保留）
     qp_lang = st.query_params.get('lang', 'en')
 
@@ -318,7 +400,10 @@ def main():
         t = I18N[lang]
 
         st.markdown(f"<div class='side-head'>{t['controls']}</div>", unsafe_allow_html=True)
-        if st.button(t['run'], type='primary', disabled=STATE['running']):
+        if CLOUD:
+            st.info(t['cloud_notice'])
+        run_disabled = CLOUD or STATE['running']
+        if st.button(t['run'], type='primary', disabled=run_disabled):
             with STATE_LOCK:
                 STATE['running'] = True
                 STATE['exit_code'] = None
@@ -332,10 +417,10 @@ def main():
             else:
                 st.error(t['fail'])
 
-        csv_path = latest_csv()
-        if csv_path is not None:
-            st.download_button(t['csv'], csv_path.read_bytes(),
-                               file_name=csv_path.name, mime='text/csv')
+        csv_fname, csv_bytes = latest_csv()
+        if csv_bytes is not None:
+            st.download_button(t['csv'], csv_bytes,
+                               file_name=csv_fname, mime='text/csv')
 
     t = I18N[lang]
 
